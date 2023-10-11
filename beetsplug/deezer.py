@@ -18,20 +18,30 @@
 """
 
 import collections
+import time
 
-import unidecode
 import requests
+import unidecode
 
 import html
 import re
 
 from beets import ui
 from beets.autotag import AlbumInfo, TrackInfo
-from beets.plugins import MetadataSourcePlugin, BeetsPlugin
+from beets.dbcore import types
+from beets.library import DateType
+from beets.plugins import BeetsPlugin, MetadataSourcePlugin
+from beets.util.id_extractors import deezer_id_regex
 
 
 class DeezerPlugin(MetadataSourcePlugin, BeetsPlugin):
     data_source = 'Deezer'
+
+    item_types = {
+        'deezer_track_rank': types.INTEGER,
+        'deezer_track_id': types.INTEGER,
+        'deezer_updated': DateType(),
+    }
 
     # Base URLs for the Deezer API
     # Documentation: https://developers.deezer.com/api/
@@ -39,13 +49,23 @@ class DeezerPlugin(MetadataSourcePlugin, BeetsPlugin):
     album_url = 'https://api.deezer.com/album/'
     track_url = 'https://api.deezer.com/track/'
 
-    id_regex = {
-        'pattern': r'(^|deezer\.com/)([a-z]*/)?({}/)?(\d+)',
-        'match_group': 4,
-    }
+    id_regex = deezer_id_regex
 
     def __init__(self):
         super().__init__()
+
+    def commands(self):
+        """Add beet UI commands to interact with Deezer."""
+        deezer_update_cmd = ui.Subcommand(
+            'deezerupdate', help=f'Update {self.data_source} rank')
+
+        def func(lib, opts, args):
+            items = lib.items(ui.decargs(args))
+            self.deezerupdate(items, ui.should_write())
+
+        deezer_update_cmd.func = func
+
+        return [deezer_update_cmd]
 
     def album_for_id(self, album_id):
         """Fetch an album by its Deezer ID or URL and return an
@@ -56,12 +76,20 @@ class DeezerPlugin(MetadataSourcePlugin, BeetsPlugin):
         :return: AlbumInfo object for album.
         :rtype: beets.autotag.hooks.AlbumInfo or None
         """
-        deezer_id = self._get_id('album', album_id)
+        deezer_id = self._get_id('album', album_id, self.id_regex)
         if deezer_id is None:
             return None
 
         album_data = requests.get(self.album_url + deezer_id).json()
-        artist, artist_id = self.get_artist(album_data['contributors'])
+        if 'error' in album_data:
+            self._log.debug(f"Error fetching album {album_id}: "
+                            f"{album_data['error']['message']}")
+            return None
+        contributors = album_data.get('contributors')
+        if contributors is not None:
+            artist, artist_id = self.get_artist(contributors)
+        else:
+            artist, artist_id = None, None
 
         release_date = album_data['release_date']
         date_parts = [int(part) for part in release_date.split('-')]
@@ -105,6 +133,7 @@ class DeezerPlugin(MetadataSourcePlugin, BeetsPlugin):
         return AlbumInfo(
             album=album_data['title'],
             album_id=deezer_id,
+            deezer_album_id=deezer_id,
             artist=artist,
             artist_credit=self.get_artist([album_data['artist']])[0],
             artist_id=artist_id,
@@ -119,6 +148,7 @@ class DeezerPlugin(MetadataSourcePlugin, BeetsPlugin):
             mediums=max(medium_totals.keys()),
             data_source=self.data_source,
             data_url=album_data['link'],
+            cover_art_url=album_data.get('cover_xl'),
         )
 
     def _get_track(self, track_data):
@@ -135,14 +165,18 @@ class DeezerPlugin(MetadataSourcePlugin, BeetsPlugin):
         return TrackInfo(
             title=track_data['title'],
             track_id=track_data['id'],
+            deezer_track_id=track_data['id'],
+            isrc=track_data.get('isrc'),
             artist=artist,
             artist_id=artist_id,
             length=track_data['duration'],
             index=track_data.get('track_position'),
             medium=track_data.get('disk_number'),
+            deezer_track_rank=track_data.get('rank'),
             medium_index=track_data.get('track_position'),
             data_source=self.data_source,
             data_url=track_data['link'],
+            deezer_updated=time.time(),
         )
 
     def track_for_id(self, track_id=None, track_data=None):
@@ -159,10 +193,14 @@ class DeezerPlugin(MetadataSourcePlugin, BeetsPlugin):
         :rtype: beets.autotag.hooks.TrackInfo or None
         """
         if track_data is None:
-            deezer_id = self._get_id('track', track_id)
+            deezer_id = self._get_id('track', track_id, self.id_regex)
             if deezer_id is None:
                 return None
             track_data = requests.get(self.track_url + deezer_id).json()
+            if 'error' in track_data:
+                self._log.debug(f"Error fetching track {track_id}: "
+                                f"{track_data['error']['message']}")
+                return None
         track = self._get_track(track_data)
 
         # Get album's tracks to set `track.index` (position on the entire
@@ -380,3 +418,27 @@ class DeezerPlugin(MetadataSourcePlugin, BeetsPlugin):
             query,
         )
         return response_data
+
+    def deezerupdate(self, items, write):
+        """Obtain rank information from Deezer."""
+        for index, item in enumerate(items, start=1):
+            self._log.info('Processing {}/{} tracks - {} ',
+                           index, len(items), item)
+            try:
+                deezer_track_id = item.deezer_track_id
+            except AttributeError:
+                self._log.debug('No deezer_track_id present for: {}', item)
+                continue
+            try:
+                rank = requests.get(
+                    f"{self.track_url}{deezer_track_id}").json().get('rank')
+                self._log.debug('Deezer track: {} has {} rank',
+                                deezer_track_id, rank)
+            except Exception as e:
+                self._log.debug('Invalid Deezer track_id: {}', e)
+                continue
+            item.deezer_track_rank = int(rank)
+            item.store()
+            item.deezer_updated = time.time()
+            if write:
+                item.try_write()

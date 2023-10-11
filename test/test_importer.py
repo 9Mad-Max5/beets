@@ -29,7 +29,6 @@ from unittest.mock import patch, Mock
 import unittest
 
 from test import _common
-from beets.util import displayable_path, bytestring_path, py3_path
 from test.helper import TestHelper, has_program, capture_log
 from test.helper import ImportSessionFixture
 from beets import importer
@@ -40,6 +39,7 @@ from beets.autotag import AlbumInfo, TrackInfo, AlbumMatch
 from beets import config
 from beets import logging
 from beets import util
+from beets.util import displayable_path, bytestring_path, py3_path, syspath
 
 
 class AutotagStub:
@@ -139,7 +139,8 @@ class AutotagStub:
             va=False,
             album_id='albumid' + id,
             artist_id='artistid' + id,
-            albumtype='soundtrack'
+            albumtype='soundtrack',
+            data_source='match_source'
         )
 
 
@@ -172,11 +173,11 @@ class ImportHelper(TestHelper):
         :param count:  Number of files to create
         """
         self.import_dir = os.path.join(self.temp_dir, b'testsrcdir')
-        if os.path.isdir(self.import_dir):
-            shutil.rmtree(self.import_dir)
+        if os.path.isdir(syspath(self.import_dir)):
+            shutil.rmtree(syspath(self.import_dir))
 
         album_path = os.path.join(self.import_dir, b'the_album')
-        os.makedirs(album_path)
+        os.makedirs(syspath(album_path))
 
         resource_path = os.path.join(_common.RSRC, b'full.mp3')
 
@@ -195,7 +196,7 @@ class ImportHelper(TestHelper):
                 album_path,
                 bytestring_path('track_%d.mp3' % (i + 1))
             )
-            shutil.copy(resource_path, medium_path)
+            shutil.copy(syspath(resource_path), syspath(medium_path))
             medium = MediaFile(medium_path)
 
             # Set metadata
@@ -240,7 +241,61 @@ class ImportHelper(TestHelper):
         self.assertNotExists(os.path.join(self.libdir, *segments))
 
     def assert_lib_dir_empty(self):
-        self.assertEqual(len(os.listdir(self.libdir)), 0)
+        self.assertEqual(len(os.listdir(syspath(self.libdir))), 0)
+
+
+class ScrubbedImportTest(_common.TestCase, ImportHelper):
+    def setUp(self):
+        self.setup_beets(disk=True)
+        self.load_plugins('scrub')
+        self._create_import_dir(2)
+        self._setup_import_session(autotag=False)
+
+    def tearDown(self):
+        self.unload_plugins()
+        self.teardown_beets()
+
+    def test_tags_not_scrubbed(self):
+        config['plugins'] = ['scrub']
+        config['scrub']['auto'] = False
+        config['import']['write'] = True
+        for mediafile in self.import_media:
+            self.assertEqual(mediafile.artist, 'Tag Artist')
+            self.assertEqual(mediafile.album, 'Tag Album')
+        self.importer.run()
+        for item in self.lib.items():
+            imported_file = os.path.join(item.path)
+            imported_file = MediaFile(imported_file)
+            self.assertEqual(imported_file.artist, 'Tag Artist')
+            self.assertEqual(imported_file.album, 'Tag Album')
+
+    def test_tags_restored(self):
+        config['plugins'] = ['scrub']
+        config['scrub']['auto'] = True
+        config['import']['write'] = True
+        for mediafile in self.import_media:
+            self.assertEqual(mediafile.artist, 'Tag Artist')
+            self.assertEqual(mediafile.album, 'Tag Album')
+        self.importer.run()
+        for item in self.lib.items():
+            imported_file = os.path.join(item.path)
+            imported_file = MediaFile(imported_file)
+            self.assertEqual(imported_file.artist, 'Tag Artist')
+            self.assertEqual(imported_file.album, 'Tag Album')
+
+    def test_tags_not_restored(self):
+        config['plugins'] = ['scrub']
+        config['scrub']['auto'] = True
+        config['import']['write'] = False
+        for mediafile in self.import_media:
+            self.assertEqual(mediafile.artist, 'Tag Artist')
+            self.assertEqual(mediafile.album, 'Tag Album')
+        self.importer.run()
+        for item in self.lib.items():
+            imported_file = os.path.join(item.path)
+            imported_file = MediaFile(imported_file)
+            self.assertEqual(imported_file.artist, None)
+            self.assertEqual(imported_file.album, None)
 
 
 @_common.slow_test()
@@ -292,8 +347,7 @@ class NonAutotaggedImportTest(_common.TestCase, ImportHelper):
         self.assertNotExists(os.path.join(self.import_dir, b'the_album'))
 
     def test_import_with_move_prunes_with_extra_clutter(self):
-        f = open(os.path.join(self.import_dir, b'the_album', b'alog.log'), 'w')
-        f.close()
+        self.touch(os.path.join(self.import_dir, b'the_album', b'alog.log'))
         config['clutter'] = ['*.log']
         config['import']['move'] = True
 
@@ -349,9 +403,9 @@ class NonAutotaggedImportTest(_common.TestCase, ImportHelper):
                 util.bytestring_path(f'{mediafile.title}.mp3')
             )
             self.assertExists(filename)
-            self.assertTrue(os.path.islink(filename))
+            self.assertTrue(os.path.islink(syspath(filename)))
             self.assert_equal_path(
-                util.bytestring_path(os.readlink(filename)),
+                util.bytestring_path(os.readlink(syspath(filename))),
                 mediafile.path
             )
 
@@ -366,8 +420,8 @@ class NonAutotaggedImportTest(_common.TestCase, ImportHelper):
                 util.bytestring_path(f'{mediafile.title}.mp3')
             )
             self.assertExists(filename)
-            s1 = os.stat(mediafile.path)
-            s2 = os.stat(filename)
+            s1 = os.stat(syspath(mediafile.path))
+            s2 = os.stat(syspath(filename))
             self.assertTrue(
                 (s1[stat.ST_INO], s1[stat.ST_DEV]) ==
                 (s2[stat.ST_INO], s2[stat.ST_DEV])
@@ -376,9 +430,10 @@ class NonAutotaggedImportTest(_common.TestCase, ImportHelper):
 
 def create_archive(session):
     (handle, path) = mkstemp(dir=py3_path(session.temp_dir))
+    path = bytestring_path(path)
     os.close(handle)
     archive = ZipFile(py3_path(path), mode='w')
-    archive.write(os.path.join(_common.RSRC, b'full.mp3'),
+    archive.write(syspath(os.path.join(_common.RSRC, b'full.mp3')),
                   'full.mp3')
     archive.close()
     path = bytestring_path(path)
@@ -432,10 +487,11 @@ class ImportZipTest(unittest.TestCase, ImportHelper):
 class ImportTarTest(ImportZipTest):
 
     def create_archive(self):
-        (handle, path) = mkstemp(dir=self.temp_dir)
+        (handle, path) = mkstemp(dir=syspath(self.temp_dir))
+        path = bytestring_path(path)
         os.close(handle)
         archive = TarFile(py3_path(path), mode='w')
-        archive.add(os.path.join(_common.RSRC, b'full.mp3'),
+        archive.add(syspath(os.path.join(_common.RSRC, b'full.mp3')),
                     'full.mp3')
         archive.close()
         return path
@@ -533,7 +589,7 @@ class ImportSingletonTest(_common.TestCase, ImportHelper):
         resource_path = os.path.join(_common.RSRC, b'empty.mp3')
         single_path = os.path.join(self.import_dir, b'track_2.mp3')
 
-        shutil.copy(resource_path, single_path)
+        util.copy(resource_path, single_path)
         import_files = [
             os.path.join(self.import_dir, b'the_album'),
             single_path
@@ -695,8 +751,7 @@ class ImportTest(_common.TestCase, ImportHelper):
         self.assertEqual(self.lib.items().get(), None)
 
     def test_skip_non_album_dirs(self):
-        self.assertTrue(os.path.isdir(
-            os.path.join(self.import_dir, b'the_album')))
+        self.assertIsDir(os.path.join(self.import_dir, b'the_album'))
         self.touch(b'cruft', dir=self.import_dir)
         self.importer.add_choice(importer.action.APPLY)
         self.importer.run()
@@ -867,7 +922,7 @@ class ImportCompilationTest(_common.TestCase, ImportHelper):
         for item in self.lib.items():
             self.assertEqual(item.albumartist, 'Various Artists')
 
-    def test_asis_heterogenous_sets_sompilation(self):
+    def test_asis_heterogenous_sets_compilation(self):
         self.import_media[0].artist = 'Other Artist'
         self.import_media[0].save()
         self.import_media[1].artist = 'Another Artist'
@@ -906,6 +961,53 @@ class ImportCompilationTest(_common.TestCase, ImportHelper):
         for item in self.lib.items():
             self.assertEqual(item.albumartist, 'Album Artist')
             self.assertEqual(item.mb_albumartistid, 'Album Artist ID')
+
+    def test_asis_albumartists_tag_sets_multi_albumartists(self):
+        self.import_media[0].artist = 'Other Artist'
+        self.import_media[0].artists = ['Other Artist', 'Other Artist 2']
+        self.import_media[1].artist = 'Another Artist'
+        self.import_media[1].artists = ['Another Artist', 'Another Artist 2']
+        for mediafile in self.import_media:
+            mediafile.albumartist = 'Album Artist'
+            mediafile.albumartists = ['Album Artist 1', 'Album Artist 2']
+            mediafile.mb_albumartistid = 'Album Artist ID'
+            mediafile.save()
+
+        self.importer.add_choice(importer.action.ASIS)
+        self.importer.run()
+        self.assertEqual(self.lib.albums().get().albumartist, 'Album Artist')
+        self.assertEqual(
+            self.lib.albums().get().albumartists,
+            ['Album Artist 1', 'Album Artist 2']
+        )
+        self.assertEqual(self.lib.albums().get().mb_albumartistid,
+                         'Album Artist ID')
+
+        # Make sure both custom media items get tested
+        asserted_multi_artists_0 = False
+        asserted_multi_artists_1 = False
+        for item in self.lib.items():
+            self.assertEqual(item.albumartist, 'Album Artist')
+            self.assertEqual(
+                item.albumartists,
+                ['Album Artist 1', 'Album Artist 2']
+            )
+            self.assertEqual(item.mb_albumartistid, 'Album Artist ID')
+
+            if item.artist == "Other Artist":
+                asserted_multi_artists_0 = True
+                self.assertEqual(
+                    item.artists,
+                    ['Other Artist', 'Other Artist 2']
+                )
+            if item.artist == "Another Artist":
+                asserted_multi_artists_1 = True
+                self.assertEqual(
+                    item.artists,
+                    ['Another Artist', 'Another Artist 2']
+                )
+
+        self.assertTrue(asserted_multi_artists_0 and asserted_multi_artists_1)
 
 
 class ImportExistingTest(_common.TestCase, ImportHelper):
@@ -1220,7 +1322,7 @@ class InferAlbumDataTest(_common.TestCase):
         self.assertFalse(self.items[0].comp)
 
 
-def test_album_info(*args, **kwargs):
+def match_album_mock(*args, **kwargs):
     """Create an AlbumInfo object for testing.
     """
     track_info = TrackInfo(
@@ -1239,7 +1341,7 @@ def test_album_info(*args, **kwargs):
     return iter([album_info])
 
 
-@patch('beets.autotag.mb.match_album', Mock(side_effect=test_album_info))
+@patch('beets.autotag.mb.match_album', Mock(side_effect=match_album_mock))
 class ImportDuplicateAlbumTest(unittest.TestCase, TestHelper,
                                _common.Assertions):
 
@@ -1348,13 +1450,13 @@ class ImportDuplicateAlbumTest(unittest.TestCase, TestHelper,
         return album
 
 
-def test_track_info(*args, **kwargs):
+def match_track_mock(*args, **kwargs):
     return iter([TrackInfo(
         artist='artist', title='title',
         track_id='new trackid', index=0,)])
 
 
-@patch('beets.autotag.mb.match_track', Mock(side_effect=test_track_info))
+@patch('beets.autotag.mb.match_track', Mock(side_effect=match_track_mock))
 class ImportDuplicateSingletonTest(unittest.TestCase, TestHelper,
                                    _common.Assertions):
 
@@ -1542,7 +1644,10 @@ class IncrementalImportTest(unittest.TestCase, TestHelper):
 
 
 def _mkmp3(path):
-    shutil.copyfile(os.path.join(_common.RSRC, b'min.mp3'), path)
+    shutil.copyfile(
+        syspath(os.path.join(_common.RSRC, b'min.mp3')),
+        syspath(path),
+    )
 
 
 class AlbumsInDirTest(_common.TestCase):
@@ -1551,13 +1656,13 @@ class AlbumsInDirTest(_common.TestCase):
 
         # create a directory structure for testing
         self.base = os.path.abspath(os.path.join(self.temp_dir, b'tempdir'))
-        os.mkdir(self.base)
+        os.mkdir(syspath(self.base))
 
-        os.mkdir(os.path.join(self.base, b'album1'))
-        os.mkdir(os.path.join(self.base, b'album2'))
-        os.mkdir(os.path.join(self.base, b'more'))
-        os.mkdir(os.path.join(self.base, b'more', b'album3'))
-        os.mkdir(os.path.join(self.base, b'more', b'album4'))
+        os.mkdir(syspath(os.path.join(self.base, b'album1')))
+        os.mkdir(syspath(os.path.join(self.base, b'album2')))
+        os.mkdir(syspath(os.path.join(self.base, b'more')))
+        os.mkdir(syspath(os.path.join(self.base, b'more', b'album3')))
+        os.mkdir(syspath(os.path.join(self.base, b'more', b'album4')))
 
         _mkmp3(os.path.join(self.base, b'album1', b'album1song1.mp3'))
         _mkmp3(os.path.join(self.base, b'album1', b'album1song2.mp3'))
@@ -1596,7 +1701,7 @@ class MultiDiscAlbumsInDirTest(_common.TestCase):
         otherwise, we use Unicode names.
         """
         self.base = os.path.abspath(os.path.join(self.temp_dir, b'tempdir'))
-        os.mkdir(self.base)
+        os.mkdir(syspath(self.base))
 
         name = b'CAT' if ascii else util.bytestring_path('C\xc1T')
         name_alt_case = b'CAt' if ascii else util.bytestring_path('C\xc1t')
@@ -1643,7 +1748,7 @@ class MultiDiscAlbumsInDirTest(_common.TestCase):
             self.files = [self._normalize_path(p) for p in self.files]
 
         for path in self.dirs:
-            os.mkdir(util.syspath(path))
+            os.mkdir(syspath(path))
         if files:
             for path in self.files:
                 _mkmp3(util.syspath(path))
@@ -1723,6 +1828,7 @@ class ReimportTest(unittest.TestCase, ImportHelper, _common.Assertions):
         album = self.add_album_fixture()
         album.added = 4242.0
         album.foo = 'bar'  # Some flexible attribute.
+        album.data_source = 'original_source'
         album.store()
         item = album.items().get()
         item.baz = 'qux'
@@ -1804,6 +1910,12 @@ class ReimportTest(unittest.TestCase, ImportHelper, _common.Assertions):
         if new_artpath != old_artpath:
             self.assertNotExists(old_artpath)
 
+    def test_reimported_album_not_preserves_flexattr(self):
+        self._setup_session()
+        self.assertEqual(self._album().data_source, 'original_source')
+        self.importer.run()
+        self.assertEqual(self._album().data_source, 'match_source')
+
 
 class ImportPretendTest(_common.TestCase, ImportHelper):
     """ Test the pretend commandline option
@@ -1831,7 +1943,7 @@ class ImportPretendTest(_common.TestCase, ImportHelper):
         self._create_import_dir(1)
         resource_path = os.path.join(_common.RSRC, b'empty.mp3')
         single_path = os.path.join(self.import_dir, b'track_2.mp3')
-        shutil.copy(resource_path, single_path)
+        shutil.copy(syspath(resource_path), syspath(single_path))
         self.import_paths = [
             os.path.join(self.import_dir, b'the_album'),
             single_path
@@ -1844,7 +1956,7 @@ class ImportPretendTest(_common.TestCase, ImportHelper):
 
     def __create_empty_import_dir(self):
         path = os.path.join(self.temp_dir, b'empty')
-        os.makedirs(path)
+        os.makedirs(syspath(path))
         self.empty_path = path
 
     def __run(self, import_paths, singletons=True):
@@ -1923,7 +2035,8 @@ def mocked_get_release_by_id(id_, includes=[], release_status=[],
             }],
             'release-group': {
                 'id': 'another-id',
-            }
+            },
+            'status': 'Official',
         }
     }
 

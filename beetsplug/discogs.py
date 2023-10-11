@@ -18,9 +18,11 @@ python3-discogs-client library.
 
 import beets.ui
 from beets import config
-from beets.autotag.hooks import AlbumInfo, TrackInfo
+from beets.util.id_extractors import extract_discogs_id_regex
+from beets.autotag.hooks import AlbumInfo, TrackInfo, string_dist
 from beets.plugins import MetadataSourcePlugin, BeetsPlugin, get_distance
 import confuse
+from discogs_client import __version__ as dc_string
 from discogs_client import Release, Master, Client
 from discogs_client.exceptions import DiscogsAPIError
 from requests.exceptions import ConnectionError
@@ -49,6 +51,7 @@ class DiscogsPlugin(BeetsPlugin):
 
     def __init__(self):
         super().__init__()
+        self.check_discogs_client()
         self.config.add({
             'apikey': API_KEY,
             'apisecret': API_SECRET,
@@ -64,6 +67,19 @@ class DiscogsPlugin(BeetsPlugin):
         self.config['user_token'].redact = True
         self.discogs_client = None
         self.register_listener('import_begin', self.setup)
+
+    def check_discogs_client(self):
+        """Ensure python3-discogs-client version >= 2.3.15
+        """
+        dc_min_version = [2, 3, 15]
+        dc_version = [int(elem) for elem in dc_string.split('.')]
+        min_len = min(len(dc_version), len(dc_min_version))
+        gt_min = [(elem > elem_min) for elem, elem_min in
+                  zip(dc_version[:min_len],
+                      dc_min_version[:min_len])]
+        if True not in gt_min:
+            self._log.warning(('python3-discogs-client version should be '
+                               '>= 2.3.15'))
 
     def setup(self, session=None):
         """Create the `discogs_client` field. Authenticate if necessary.
@@ -180,6 +196,40 @@ class DiscogsPlugin(BeetsPlugin):
             self._log.debug('Connection error in album search', exc_info=True)
             return []
 
+    def get_track_from_album_by_title(self, album_info, title,
+                                      dist_threshold=0.3):
+        def compare_func(track_info):
+            track_title = getattr(track_info, "title", None)
+            dist = string_dist(track_title, title)
+            return (track_title and dist < dist_threshold)
+        return self.get_track_from_album(album_info, compare_func)
+
+    def get_track_from_album(self, album_info, compare_func):
+        """Return the first track of the release where `compare_func` returns
+        true.
+
+        :return: TrackInfo object.
+        :rtype: beets.autotag.hooks.TrackInfo
+        """
+        if not album_info:
+            return None
+
+        for track_info in album_info.tracks:
+            # check for matching position
+            if not compare_func(track_info):
+                continue
+
+            # attach artist info if not provided
+            if not track_info['artist']:
+                track_info['artist'] = album_info.artist
+                track_info['artist_id'] = album_info.artist_id
+            # attach album info
+            track_info['album'] = album_info.album
+
+            return track_info
+
+        return None
+
     def item_candidates(self, item, artist, title):
         """Returns a list of TrackInfo objects for Search API results
         matching ``title`` and ``artist``.
@@ -198,6 +248,7 @@ class DiscogsPlugin(BeetsPlugin):
         if not artist and not title:
             self._log.debug('Skipping Discogs query. File missing artist and '
                             'title tags.')
+            return
 
         query = f'{artist} {title}'
         try:
@@ -214,34 +265,13 @@ class DiscogsPlugin(BeetsPlugin):
         candidates = []
         for album_cur in albums:
             self._log.debug(u'searching within album {0}', album_cur.album)
-            candidates += album_cur.tracks
+            track_result = self.get_track_from_album_by_title(
+                album_cur, item['title']
+            )
+            if track_result:
+                candidates.append(track_result)
         # first 10 results, don't overwhelm with options
         return candidates[:10]
-
-    @staticmethod
-    def extract_release_id_regex(album_id):
-        """Returns the Discogs_id or None."""
-        # Discogs-IDs are simple integers. In order to avoid confusion with
-        # other metadata plugins, we only look for very specific formats of the
-        # input string:
-        # - plain integer, optionally wrapped in brackets and prefixed by an
-        #   'r', as this is how discogs displays the release ID on its webpage.
-        # - legacy url format: discogs.com/<name of release>/release/<id>
-        # - current url format: discogs.com/release/<id>-<name of release>
-        # See #291, #4080 and #4085 for the discussions leading up to these
-        # patterns.
-        # Regex has been tested here https://regex101.com/r/wyLdB4/2
-
-        for pattern in [
-                r'^\[?r?(?P<id>\d+)\]?$',
-                r'discogs\.com/release/(?P<id>\d+)-',
-                r'discogs\.com/[^/]+/release/(?P<id>\d+)',
-        ]:
-            match = re.search(pattern, album_id)
-            if match:
-                return int(match.group('id'))
-
-        return None
 
     def album_for_id(self, album_id):
         """Fetches an album by its Discogs ID and returns an AlbumInfo object
@@ -252,7 +282,7 @@ class DiscogsPlugin(BeetsPlugin):
 
         self._log.debug('Searching for release {0}', album_id)
 
-        discogs_id = self.extract_release_id_regex(album_id)
+        discogs_id = extract_discogs_id_regex(album_id)
 
         if not discogs_id:
             return None
@@ -285,7 +315,7 @@ class DiscogsPlugin(BeetsPlugin):
         query = re.sub(r'(?u)\W+', ' ', query)
         # Strip medium information from query, Things like "CD1" and "disk 1"
         # can also negate an otherwise positive result.
-        query = re.sub(r'(?i)\b(CD|disc)\s*\d+', '', query)
+        query = re.sub(r'(?i)\b(CD|disc|vinyl)\s*\d+', '', query)
 
         try:
             releases = self.discogs_client.search(query,
@@ -365,7 +395,7 @@ class DiscogsPlugin(BeetsPlugin):
         else:
             genre = base_genre
 
-        discogs_albumid = self.extract_release_id_regex(result.data.get('uri'))
+        discogs_albumid = extract_discogs_id_regex(result.data.get('uri'))
 
         # Extract information for the optional AlbumInfo fields that are
         # contained on nested discogs fields.

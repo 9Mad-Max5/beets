@@ -25,9 +25,10 @@ from test.test_art_resize import DummyIMBackend
 
 from mediafile import MediaFile
 from beets import config, logging, ui
-from beets.util import syspath, displayable_path
+from beets.util import bytestring_path, displayable_path, syspath
 from beets.util.artresizer import ArtResizer
 from beets import art
+from test.test_art import FetchImageHelper
 
 
 def require_artresizer_compare(test):
@@ -42,7 +43,7 @@ def require_artresizer_compare(test):
     return wrapper
 
 
-class EmbedartCliTest(_common.TestCase, TestHelper):
+class EmbedartCliTest(TestHelper, FetchImageHelper):
 
     small_artpath = os.path.join(_common.RSRC, b'image-2x3.jpg')
     abbey_artpath = os.path.join(_common.RSRC, b'abbey.jpg')
@@ -109,6 +110,7 @@ class EmbedartCliTest(_common.TestCase, TestHelper):
         logging.getLogger('beets.embedart').setLevel(logging.DEBUG)
 
         handle, tmp_path = tempfile.mkstemp()
+        tmp_path = bytestring_path(tmp_path)
         os.write(handle, self.image_data)
         os.close(handle)
 
@@ -118,9 +120,11 @@ class EmbedartCliTest(_common.TestCase, TestHelper):
         config['embedart']['remove_art_file'] = True
         self.run_command('embedart', '-y')
 
-        if os.path.isfile(tmp_path):
-            os.remove(tmp_path)
-            self.fail(f'Artwork file {tmp_path} was not deleted')
+        if os.path.isfile(syspath(tmp_path)):
+            os.remove(syspath(tmp_path))
+            self.fail('Artwork file {} was not deleted'.format(
+                displayable_path(tmp_path)
+            ))
 
     def test_art_file_missing(self):
         self.add_album_fixture()
@@ -133,13 +137,14 @@ class EmbedartCliTest(_common.TestCase, TestHelper):
         logging.getLogger('beets.embedart').setLevel(logging.DEBUG)
 
         handle, tmp_path = tempfile.mkstemp()
+        tmp_path = bytestring_path(tmp_path)
         os.write(handle, b'I am not an image.')
         os.close(handle)
 
         try:
             self.run_command('embedart', '-y', '-f', tmp_path)
         finally:
-            os.remove(tmp_path)
+            os.remove(syspath(tmp_path))
 
         mediafile = MediaFile(syspath(album.items()[0].path))
         self.assertFalse(mediafile.images)  # No image added.
@@ -215,6 +220,41 @@ class EmbedartCliTest(_common.TestCase, TestHelper):
         self.run_command('clearart')
         mediafile = MediaFile(syspath(item.path))
         self.assertEqual(mediafile.images[0].data, self.image_data)
+
+    def test_embed_art_from_url_with_yes_input(self):
+        self._setup_data()
+        album = self.add_album_fixture()
+        item = album.items()[0]
+        self.mock_response('http://example.com/test.jpg', 'image/jpeg')
+        self.io.addinput('y')
+        self.run_command('embedart', '-u', 'http://example.com/test.jpg')
+        mediafile = MediaFile(syspath(item.path))
+        self.assertEqual(
+            mediafile.images[0].data,
+            self.IMAGEHEADER.get('image/jpeg').ljust(32, b'\x00')
+        )
+
+    def test_embed_art_from_url_png(self):
+        self._setup_data()
+        album = self.add_album_fixture()
+        item = album.items()[0]
+        self.mock_response('http://example.com/test.png', 'image/png')
+        self.run_command('embedart', '-y', '-u', 'http://example.com/test.png')
+        mediafile = MediaFile(syspath(item.path))
+        self.assertEqual(
+            mediafile.images[0].data,
+            self.IMAGEHEADER.get('image/png').ljust(32, b'\x00')
+        )
+
+    def test_embed_art_from_url_not_image(self):
+        self._setup_data()
+        album = self.add_album_fixture()
+        item = album.items()[0]
+        self.mock_response('http://example.com/test.html', 'text/html')
+        self.run_command('embedart', '-y', '-u',
+                         'http://example.com/test.html')
+        mediafile = MediaFile(syspath(item.path))
+        self.assertFalse(mediafile.images)
 
 
 class DummyArtResizer(ArtResizer):

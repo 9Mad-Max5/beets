@@ -211,6 +211,18 @@ def disambig_string(info):
             disambig.append(info.catalognum)
         if info.albumdisambig:
             disambig.append(info.albumdisambig)
+        # Let the user differentiate between pseudo and actual releases.
+        if info.albumstatus == 'Pseudo-Release':
+            disambig.append(info.albumstatus)
+
+    if isinstance(info, hooks.TrackInfo):
+        if info.index:
+            disambig.append("Index {}".format(str(info.index)))
+        if info.track_alt:
+            disambig.append("Track {}".format(info.track_alt))
+        if (config['import']['singleton_album_disambig'].get()
+                and info.get('album')):
+            disambig.append("[{}]".format(info.album))
 
     if disambig:
         return ', '.join(disambig)
@@ -441,18 +453,28 @@ def show_item_change(item, match):
     """
     cur_artist, new_artist = item.artist, match.info.artist
     cur_title, new_title = item.title, match.info.title
+    cur_album = item.album if item.album else ""
+    new_album = match.info.album if match.info.album else ""
 
-    if cur_artist != new_artist or cur_title != new_title:
+    if (cur_artist != new_artist or cur_title != new_title
+            or cur_album != new_album):
         cur_artist, new_artist = ui.colordiff(cur_artist, new_artist)
         cur_title, new_title = ui.colordiff(cur_title, new_title)
+        cur_album, new_album = ui.colordiff(cur_album, new_album)
 
         print_("Correcting track tags from:")
         print_(f"    {cur_artist} - {cur_title}")
+        if cur_album:
+            print_(f"    Album: {cur_album}")
         print_("To:")
         print_(f"    {new_artist} - {new_title}")
+        if new_album:
+            print_(f"    Album: {new_album}")
 
     else:
         print_(f"Tagging track: {cur_artist} - {cur_title}")
+        if cur_album:
+            print_(f"               Album: {new_album}")
 
     # Data URL.
     if match.info.data_url:
@@ -850,11 +872,20 @@ class TerminalImportSession(importer.ImportSession):
                     list(duplicate.items()) if task.is_album else [duplicate],
                     not task.is_album,
                 ))
+                if config['import']['duplicate_verbose_prompt']:
+                    if task.is_album:
+                        for dup in duplicate.items():
+                            print(f"  {dup}")
+                    else:
+                        print(f"  {duplicate}")
 
             print_("New: " + summarize_items(
                 task.imported_items(),
                 not task.is_album,
             ))
+            if config['import']['duplicate_verbose_prompt']:
+                for item in task.imported_items():
+                    print(f"  {item}")
 
             sel = ui.input_options(
                 ('Skip new', 'Keep all', 'Remove old', 'Merge all')
@@ -958,7 +989,7 @@ def import_files(lib, paths, query):
     if config['import']['log'].get() is not None:
         logpath = syspath(config['import']['log'].as_filename())
         try:
-            loghandler = logging.FileHandler(logpath)
+            loghandler = logging.FileHandler(logpath, encoding='utf-8')
         except OSError:
             raise ui.UserError("could not open log file for writing: "
                                "{}".format(displayable_path(logpath)))
@@ -1165,25 +1196,43 @@ default_commands.append(list_cmd)
 
 # update: Update library contents according to on-disk tags.
 
-def update_items(lib, query, album, move, pretend, fields):
+def update_items(lib, query, album, move, pretend, fields,
+                 exclude_fields=None):
     """For all the items matched by the query, update the library to
     reflect the item's embedded tags.
     :param fields: The fields to be stored. If not specified, all fields will
     be.
+    :param exclude_fields: The fields to not be stored. If not specified, all
+    fields will be.
     """
     with lib.transaction():
+        items, _ = _do_query(lib, query, album)
         if move and fields is not None and 'path' not in fields:
             # Special case: if an item needs to be moved, the path field has to
             # updated; otherwise the new path will not be reflected in the
             # database.
             fields.append('path')
-        items, _ = _do_query(lib, query, album)
+        if fields is None:
+            # no fields were provided, update all media fields
+            item_fields = fields or library.Item._media_fields
+            if move and 'path' not in item_fields:
+                # move is enabled, add 'path' to the list of fields to update
+                item_fields.add('path')
+        else:
+            # fields was provided, just update those
+            item_fields = fields
+        # get all the album fields to update
+        album_fields = fields or library.Album._fields.keys()
+        if exclude_fields:
+            # remove any excluded fields from the item and album sets
+            item_fields = [f for f in item_fields if f not in exclude_fields]
+            album_fields = [f for f in album_fields if f not in exclude_fields]
 
         # Walk through the items and pick up their changes.
         affected_albums = set()
         for item in items:
             # Item deleted?
-            if not os.path.exists(syspath(item.path)):
+            if not item.path or not os.path.exists(syspath(item.path)):
                 ui.print_(format(item))
                 ui.print_(ui.colorize('text_error', '  deleted'))
                 if not pretend:
@@ -1217,7 +1266,7 @@ def update_items(lib, query, album, move, pretend, fields):
             # Check for and display changes.
             changed = ui.show_model_changes(
                 item,
-                fields=fields or library.Item._media_fields)
+                fields=item_fields)
 
             # Save changes.
             if not pretend:
@@ -1226,14 +1275,14 @@ def update_items(lib, query, album, move, pretend, fields):
                     if move and lib.directory in ancestry(item.path):
                         item.move(store=False)
 
-                    item.store(fields=fields)
+                    item.store(fields=item_fields)
                     affected_albums.add(item.album_id)
                 else:
                     # The file's mtime was different, but there were no
                     # changes to the metadata. Store the new mtime,
                     # which is set in the call to read(), so we don't
                     # check this again in the future.
-                    item.store(fields=fields)
+                    item.store(fields=item_fields)
 
         # Skip album changes while pretending.
         if pretend:
@@ -1252,7 +1301,7 @@ def update_items(lib, query, album, move, pretend, fields):
             # Update album structure to reflect an item in it.
             for key in library.Album.item_keys:
                 album[key] = first_item[key]
-            album.store(fields=fields)
+            album.store(fields=album_fields)
 
             # Move album art (and any inconsistent items).
             if move and lib.directory in ancestry(first_item.path):
@@ -1262,20 +1311,20 @@ def update_items(lib, query, album, move, pretend, fields):
                 items = list(album.items())
                 for item in items:
                     item.move(store=False, with_album=False)
-                    item.store(fields=fields)
+                    item.store(fields=item_fields)
                 album.move(store=False)
-                album.store(fields=fields)
+                album.store(fields=album_fields)
 
 
 def update_func(lib, opts, args):
     # Verify that the library folder exists to prevent accidental wipes.
-    if not os.path.isdir(lib.directory):
+    if not os.path.isdir(syspath(lib.directory)):
         ui.print_("Library path is unavailable or does not exist.")
         ui.print_(lib.directory)
         if not ui.input_yn("Are you sure you want to continue (y/n)?", True):
             return
     update_items(lib, decargs(args), opts.album, ui.should_move(opts.move),
-                 opts.pretend, opts.fields)
+                 opts.pretend, opts.fields, opts.exclude_fields)
 
 
 update_cmd = ui.Subcommand(
@@ -1298,6 +1347,11 @@ update_cmd.parser.add_option(
 update_cmd.parser.add_option(
     '-F', '--field', default=None, action='append', dest='fields',
     help='list of fields to update'
+)
+update_cmd.parser.add_option(
+    '-e', '--exclude-field', default=None, action='append',
+    dest='exclude_fields',
+    help='list of fields to exclude from updates'
 )
 update_cmd.func = update_func
 default_commands.append(update_cmd)
@@ -1467,7 +1521,7 @@ default_commands.append(version_cmd)
 
 # modify: Declaratively change metadata.
 
-def modify_items(lib, mods, dels, query, write, move, album, confirm):
+def modify_items(lib, mods, dels, query, write, move, album, confirm, inherit):
     """Modifies matching items according to user-specified assignments and
     deletions.
 
@@ -1520,7 +1574,7 @@ def modify_items(lib, mods, dels, query, write, move, album, confirm):
     # Apply changes to database and files
     with lib.transaction():
         for obj in changed:
-            obj.try_sync(write, move)
+            obj.try_sync(write, move, inherit)
 
 
 def print_and_modify(obj, mods, dels):
@@ -1563,7 +1617,8 @@ def modify_func(lib, opts, args):
     if not mods and not dels:
         raise ui.UserError('no modifications specified')
     modify_items(lib, mods, dels, query, ui.should_write(opts.write),
-                 ui.should_move(opts.move), opts.album, not opts.yes)
+                 ui.should_move(opts.move), opts.album, not opts.yes,
+                 opts.inherit)
 
 
 modify_cmd = ui.Subcommand(
@@ -1590,6 +1645,10 @@ modify_cmd.parser.add_format_option(target='item')
 modify_cmd.parser.add_option(
     '-y', '--yes', action='store_true',
     help='skip confirmation'
+)
+modify_cmd.parser.add_option(
+    '-I', '--noinherit', action='store_false', dest='inherit', default=True,
+    help="when modifying albums, don't also change item data"
 )
 modify_cmd.func = modify_func
 default_commands.append(modify_cmd)
@@ -1663,8 +1722,10 @@ def move_func(lib, opts, args):
     dest = opts.dest
     if dest is not None:
         dest = normpath(dest)
-        if not os.path.isdir(dest):
-            raise ui.UserError('no such directory: %s' % dest)
+        if not os.path.isdir(syspath(dest)):
+            raise ui.UserError('no such directory: {}'.format(
+                displayable_path(dest)
+            ))
 
     move_items(lib, dest, decargs(args), opts.copy, opts.album, opts.pretend,
                opts.timid, opts.export)
@@ -1778,7 +1839,7 @@ def config_func(lib, opts, args):
     else:
         config_out = config.dump(full=opts.defaults, redact=opts.redact)
         if config_out.strip() != '{}':
-            print_(util.text_string(config_out))
+            print_(config_out)
         else:
             print("Empty configuration")
 
@@ -1828,20 +1889,20 @@ default_commands.append(config_cmd)
 def print_completion(*args):
     for line in completion_script(default_commands + plugins.commands()):
         print_(line, end='')
-    if not any(map(os.path.isfile, BASH_COMPLETION_PATHS)):
+    if not any(os.path.isfile(syspath(p)) for p in BASH_COMPLETION_PATHS):
         log.warning('Warning: Unable to find the bash-completion package. '
                     'Command line completion might not work.')
 
 
-BASH_COMPLETION_PATHS = map(syspath, [
-    '/etc/bash_completion',
-    '/usr/share/bash-completion/bash_completion',
-    '/usr/local/share/bash-completion/bash_completion',
+BASH_COMPLETION_PATHS = [
+    b'/etc/bash_completion',
+    b'/usr/share/bash-completion/bash_completion',
+    b'/usr/local/share/bash-completion/bash_completion',
     # SmartOS
-    '/opt/local/share/bash-completion/bash_completion',
+    b'/opt/local/share/bash-completion/bash_completion',
     # Homebrew (before bash-completion2)
-    '/usr/local/etc/bash_completion',
-])
+    b'/usr/local/etc/bash_completion',
+]
 
 
 def completion_script(commands):
@@ -1852,7 +1913,7 @@ def completion_script(commands):
     """
     base_script = os.path.join(os.path.dirname(__file__), 'completion_base.sh')
     with open(base_script) as base_script:
-        yield util.text_string(base_script.read())
+        yield base_script.read()
 
     options = {}
     aliases = {}

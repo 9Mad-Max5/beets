@@ -63,6 +63,7 @@ following to your configuration::
    acousticbrainz
    albumtypes
    aura
+   autobpm
    badfiles
    bareasc
    beatport
@@ -122,12 +123,15 @@ following to your configuration::
    spotify
    subsonicplaylist
    subsonicupdate
+   substitute
    the
    thumbnails
    types
    unimported
    web
    zero
+
+.. _autotagger_extensions:
 
 Autotagger Extensions
 ---------------------
@@ -156,10 +160,13 @@ Metadata
 --------
 
 :doc:`absubmit <absubmit>`
-   Analyse audio with the `streaming_extractor_music`_ program and submit the metadata to the AcousticBrainz server
+   Analyse audio with the `streaming_extractor_music`_ program and submit the metadata to an AcousticBrainz server
 
 :doc:`acousticbrainz <acousticbrainz>`
    Fetch various AcousticBrainz metadata
+
+:doc:`autobpm <autobpm>`
+   Use `Librosa`_ to calculate the BPM from the audio.
 
 :doc:`bpm <bpm>`
    Measure tempo using keystrokes.
@@ -219,6 +226,7 @@ Metadata
 :doc:`zero <zero>`
    Nullify fields by pattern or unconditionally.
 
+.. _Librosa: https://github.com/librosa/librosa/
 .. _KeyFinder: http://www.ibrahimshaath.co.uk/keyfinder/
 .. _streaming_extractor_music: https://acousticbrainz.org/download
 
@@ -237,6 +245,11 @@ Path Formats
 
 :doc:`rewrite <rewrite>`
    Substitute values in path formats.
+
+:doc:`substitute <substitute>`
+   As an alternative to :doc:`rewrite <rewrite>`, use this plugin. The main
+   difference between them is that this plugin never modifies the files
+   metadata.
 
 :doc:`the <the>`
    Move patterns in path formats (i.e., move "a" and "the" to the
@@ -458,8 +471,17 @@ Here are a few of the plugins written by the beets community:
    Lets you perform regex replacements on incoming
    metadata.
 
+`beets-jiosaavn`_
+   Adds JioSaavn.com as a tagger data source.
+
+`beets-more`_
+   Finds versions of indexed releases with more tracks, like deluxe and anniversary editions.
+
 `beets-mosaic`_
    Generates a montage of a mosaic from cover art.
+
+`beets-mpd-utils`_
+    Plugins to interface with `MPD`_. Comes with ``mpd_tracker`` (track play/skip counts from MPD) and  ``mpd_dj`` (auto-add songs to your queue.)
 
 `beets-noimport`_
    Adds and removes directories from the incremental import skip list.
@@ -468,8 +490,8 @@ Here are a few of the plugins written by the beets community:
    Augments MusicBrainz queries with locally-sourced data
    to improve autotagger results.
 
-`beets-popularity`_
-   Fetches popularity values from Deezer.
+`beets-plexsync`_
+   Allows you to sync your Plex library with your beets library, create smart playlists in Plex, and import online playlists (from services like Spotify) into Plex.
 
 `beets-setlister`_
    Generate playlists from the setlists of a given artist.
@@ -492,6 +514,9 @@ Here are a few of the plugins written by the beets community:
 
 `beets-yearfixer`_
    Attempts to fix all missing ``original_year`` and ``year`` fields.
+
+`beets-youtube`_
+   Adds YouTube Music as a tagger data source.
 
 .. _beets-barcode: https://github.com/8h2a/beets-barcode
 .. _beetcamp: https://github.com/snejus/beetcamp
@@ -517,7 +542,9 @@ Here are a few of the plugins written by the beets community:
 .. _beets-noimport: https://gitlab.com/tiago.dias/beets-noimport
 .. _whatlastgenre: https://github.com/YetAnotherNerd/whatlastgenre/tree/master/plugin/beets
 .. _beets-usertag: https://github.com/igordertigor/beets-usertag
-.. _beets-popularity: https://github.com/abba23/beets-popularity
+.. _beets-plexsync: https://github.com/arsaboo/beets-plexsync
+.. _beets-jiosaavn: https://github.com/arsaboo/beets-jiosaavn
+.. _beets-youtube: https://github.com/arsaboo/beets-youtube
 .. _beets-ydl: https://github.com/vmassuchetto/beets-ydl
 .. _beet-summarize: https://github.com/steven-murray/beet-summarize
 .. _beets-mosaic: https://github.com/SusannaMaria/beets-mosaic
@@ -530,3 +557,5 @@ Here are a few of the plugins written by the beets community:
 .. _beets-originquery: https://github.com/x1ppy/beets-originquery
 .. _drop2beets: https://github.com/martinkirch/drop2beets
 .. _beets-audible: https://github.com/Neurrone/beets-audible
+.. _beets-more: https://forgejo.sny.sh/sun/beetsplug/src/branch/main/more
+.. _beets-mpd-utils: https://github.com/thekakkun/beets-mpd-utils

@@ -32,6 +32,7 @@ from beets.autotag.hooks import AlbumInfo, TrackInfo
 from beets.dbcore import types
 from beets.library import DateType
 from beets.plugins import BeetsPlugin, MetadataSourcePlugin
+from beets.util.id_extractors import spotify_id_regex
 
 DEFAULT_WAITING_TIME = 5
 
@@ -69,12 +70,7 @@ class SpotifyPlugin(MetadataSourcePlugin, BeetsPlugin):
     track_url = 'https://api.spotify.com/v1/tracks/'
     audio_features_url = 'https://api.spotify.com/v1/audio-features/'
 
-    # Spotify IDs consist of 22 alphanumeric characters
-    # (zero-left-padded base62 representation of randomly generated UUID4)
-    id_regex = {
-        'pattern': r'(^|open\.spotify\.com/{}/)([0-9A-Za-z]{{22}})',
-        'match_group': 2,
-    }
+    id_regex = spotify_id_regex
 
     spotify_audio_features = {
         'acousticness': 'spotify_acousticness',
@@ -216,13 +212,16 @@ class SpotifyPlugin(MetadataSourcePlugin, BeetsPlugin):
         :return: AlbumInfo object for album
         :rtype: beets.autotag.hooks.AlbumInfo or None
         """
-        spotify_id = self._get_id('album', album_id)
+        spotify_id = self._get_id('album', album_id, self.id_regex)
         if spotify_id is None:
             return None
 
         album_data = self._handle_response(
             requests.get, self.album_url + spotify_id
         )
+        if album_data['name'] == "":
+            self._log.debug("Album removed from Spotify: {}", album_id)
+            return None
         artist, artist_id = self.get_artist(album_data['artists'])
 
         date_parts = [
@@ -298,7 +297,7 @@ class SpotifyPlugin(MetadataSourcePlugin, BeetsPlugin):
         # Get album information for spotify tracks
         try:
             album = track_data['album']['name']
-        except KeyError:
+        except (KeyError, TypeError):
             album = None
         return TrackInfo(
             title=track_data['name'],
@@ -330,7 +329,7 @@ class SpotifyPlugin(MetadataSourcePlugin, BeetsPlugin):
         :rtype: beets.autotag.hooks.TrackInfo or None
         """
         if track_data is None:
-            spotify_id = self._get_id('track', track_id)
+            spotify_id = self._get_id('track', track_id, self.id_regex)
             if spotify_id is None:
                 return None
             track_data = self._handle_response(

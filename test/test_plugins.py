@@ -26,6 +26,9 @@ from beets.library import Item
 from beets.dbcore import types
 from mediafile import MediaFile
 from beets.util import displayable_path, bytestring_path, syspath
+from beets.plugins import MetadataSourcePlugin
+from beets.util.id_extractors import spotify_id_regex, deezer_id_regex, \
+    beatport_id_regex
 
 from test.test_importer import ImportHelper, AutotagStub
 from test.test_ui_importer import TerminalImportSessionSetup
@@ -177,7 +180,7 @@ class EventsTest(unittest.TestCase, ImportHelper, TestHelper):
     def __copy_file(self, dest_path, metadata):
         # Copy files
         resource_path = os.path.join(RSRC, b'full.mp3')
-        shutil.copy(resource_path, dest_path)
+        shutil.copy(syspath(resource_path), syspath(dest_path))
         medium = MediaFile(dest_path)
         # Set metadata
         for attr in metadata:
@@ -186,8 +189,8 @@ class EventsTest(unittest.TestCase, ImportHelper, TestHelper):
 
     def __create_import_dir(self, count):
         self.import_dir = os.path.join(self.temp_dir, b'testsrcdir')
-        if os.path.isdir(self.import_dir):
-            shutil.rmtree(self.import_dir)
+        if os.path.isdir(syspath(self.import_dir)):
+            shutil.rmtree(syspath(self.import_dir))
 
         self.album_path = os.path.join(self.import_dir, b'album')
         os.makedirs(self.album_path)
@@ -372,7 +375,7 @@ class ListenersTest(unittest.TestCase, TestHelper):
             def dummy5(self, bar):
                 test.assertFalse(True)
 
-            # more complex exmaples
+            # more complex examples
 
             def dummy6(self, foo, bar=None):
                 test.assertEqual(foo, 5)
@@ -556,6 +559,69 @@ class PromptChoicesTest(TerminalImportSessionSetup, unittest.TestCase,
         # input_options should be called once, as foo() returns SKIP
         self.mock_input_options.assert_called_once_with(opts, default='a',
                                                         require=ANY)
+
+
+class ParseSpotifyIDTest(unittest.TestCase):
+    def test_parse_id_correct(self):
+        id_string = "39WqpoPgZxygo6YQjehLJJ"
+        out = MetadataSourcePlugin._get_id(
+            "album", id_string, spotify_id_regex)
+        self.assertEqual(out, id_string)
+
+    def test_parse_id_non_id_returns_none(self):
+        id_string = "blah blah"
+        out = MetadataSourcePlugin._get_id(
+            "album", id_string, spotify_id_regex)
+        self.assertEqual(out, None)
+
+    def test_parse_id_url_finds_id(self):
+        id_string = "39WqpoPgZxygo6YQjehLJJ"
+        id_url = "https://open.spotify.com/album/%s" % id_string
+        out = MetadataSourcePlugin._get_id(
+            "album", id_url, spotify_id_regex)
+        self.assertEqual(out, id_string)
+
+
+class ParseDeezerIDTest(unittest.TestCase):
+    def test_parse_id_correct(self):
+        id_string = "176356382"
+        out = MetadataSourcePlugin._get_id(
+            "album", id_string, deezer_id_regex)
+        self.assertEqual(out, id_string)
+
+    def test_parse_id_non_id_returns_none(self):
+        id_string = "blah blah"
+        out = MetadataSourcePlugin._get_id(
+            "album", id_string, deezer_id_regex)
+        self.assertEqual(out, None)
+
+    def test_parse_id_url_finds_id(self):
+        id_string = "176356382"
+        id_url = "https://www.deezer.com/album/%s" % id_string
+        out = MetadataSourcePlugin._get_id(
+            "album", id_url, deezer_id_regex)
+        self.assertEqual(out, id_string)
+
+
+class ParseBeatportIDTest(unittest.TestCase):
+    def test_parse_id_correct(self):
+        id_string = "3089651"
+        out = MetadataSourcePlugin._get_id(
+            "album", id_string, beatport_id_regex)
+        self.assertEqual(out, id_string)
+
+    def test_parse_id_non_id_returns_none(self):
+        id_string = "blah blah"
+        out = MetadataSourcePlugin._get_id(
+            "album", id_string, beatport_id_regex)
+        self.assertEqual(out, None)
+
+    def test_parse_id_url_finds_id(self):
+        id_string = "3089651"
+        id_url = "https://www.beatport.com/release/album-name/%s" % id_string
+        out = MetadataSourcePlugin._get_id(
+            "album", id_url, beatport_id_regex)
+        self.assertEqual(out, id_string)
 
 
 def suite():

@@ -31,9 +31,11 @@ import:
         album: albumartist album
         item: artist title
     duplicate_action: ask
+    duplicate_verbose_prompt: no
     bell: no
     set_fields: {}
     ignored_alias_types: []
+    singleton_album_disambig: yes
 
 clutter: ["Thumbs.DB", ".DS_Store"]
 ignore: [".*", "*~", "System Volume Information", "lost+found"]
@@ -128,6 +130,13 @@ musicbrainz:
     searchlimit: 5
     extra_tags: []
     genres: no
+    external_ids:
+        discogs: no
+        bandcamp: no
+        spotify: no
+        deezer: no
+        beatport: no
+        tidal: no
 
 match:
     strong_rec_thresh: 0.04

@@ -256,6 +256,7 @@ class IMBackend(LocalBackend):
             '-colorspace', 'gray', 'MIFF:-'
         ]
         compare_cmd = self.compare_cmd + [
+            '-define', 'phash:colorspaces=sRGB,HCLp',
             '-metric', 'PHASH', '-', 'null:',
         ]
         log.debug('comparing images with pipeline {} | {}',
@@ -352,7 +353,7 @@ class PILBackend(LocalBackend):
         try:
             im = Image.open(syspath(path_in))
             size = maxwidth, maxwidth
-            im.thumbnail(size, Image.ANTIALIAS)
+            im.thumbnail(size, Image.Resampling.LANCZOS)
 
             if quality == 0:
                 # Use PIL's default quality.
@@ -371,7 +372,7 @@ class PILBackend(LocalBackend):
                 else:
                     lower_qual = 95
                 for i in range(5):
-                    # 5 attempts is an abitrary choice
+                    # 5 attempts is an arbitrary choice
                     filesize = os.stat(syspath(path_out)).st_size
                     log.debug("PIL Pass {0} : Output size: {1}B", i, filesize)
                     if filesize <= max_filesize:
@@ -459,11 +460,11 @@ class PILBackend(LocalBackend):
 
         # FIXME: Detect and handle other file types (currently, the only user
         # is the thumbnails plugin, which generates PNG images).
-        im = Image.open(file)
+        im = Image.open(syspath(file))
         meta = PngImagePlugin.PngInfo()
         for k, v in metadata.items():
             meta.add_text(k, v, 0)
-        im.save(file, "PNG", pnginfo=meta)
+        im.save(py3_path(file), "PNG", pnginfo=meta)
 
 
 class Shareable(type):
@@ -497,7 +498,7 @@ class ArtResizer(metaclass=Shareable):
     def __init__(self):
         """Create a resizer object with an inferred method.
         """
-        # Check if a local backend is availabe, and store an instance of the
+        # Check if a local backend is available, and store an instance of the
         # backend class. Otherwise, fallback to the web proxy.
         for backend_cls in BACKEND_CLASSES:
             try:

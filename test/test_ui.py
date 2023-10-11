@@ -114,7 +114,7 @@ class RemoveTest(_common.TestCase, TestHelper):
         self.io.install()
 
         self.libdir = os.path.join(self.temp_dir, b'testlibdir')
-        os.mkdir(self.libdir)
+        os.mkdir(syspath(self.libdir))
 
         # Copy a file into the library.
         self.lib = library.Library(':memory:', self.libdir)
@@ -128,26 +128,26 @@ class RemoveTest(_common.TestCase, TestHelper):
         commands.remove_items(self.lib, '', False, False, False)
         items = self.lib.items()
         self.assertEqual(len(list(items)), 0)
-        self.assertTrue(os.path.exists(self.i.path))
+        self.assertExists(self.i.path)
 
     def test_remove_items_with_delete(self):
         self.io.addinput('y')
         commands.remove_items(self.lib, '', False, True, False)
         items = self.lib.items()
         self.assertEqual(len(list(items)), 0)
-        self.assertFalse(os.path.exists(self.i.path))
+        self.assertNotExists(self.i.path)
 
     def test_remove_items_with_force_no_delete(self):
         commands.remove_items(self.lib, '', False, False, True)
         items = self.lib.items()
         self.assertEqual(len(list(items)), 0)
-        self.assertTrue(os.path.exists(self.i.path))
+        self.assertExists(self.i.path)
 
     def test_remove_items_with_force_delete(self):
         commands.remove_items(self.lib, '', False, True, True)
         items = self.lib.items()
         self.assertEqual(len(list(items)), 0)
-        self.assertFalse(os.path.exists(self.i.path))
+        self.assertNotExists(self.i.path)
 
     def test_remove_items_select_with_delete(self):
         i2 = library.Item.from_path(self.item_path)
@@ -458,10 +458,13 @@ class MoveTest(_common.TestCase):
         self.io.install()
 
         self.libdir = os.path.join(self.temp_dir, b'testlibdir')
-        os.mkdir(self.libdir)
+        os.mkdir(syspath(self.libdir))
 
         self.itempath = os.path.join(self.libdir, b'srcfile')
-        shutil.copy(os.path.join(_common.RSRC, b'full.mp3'), self.itempath)
+        shutil.copy(
+            syspath(os.path.join(_common.RSRC, b'full.mp3')),
+            syspath(self.itempath),
+        )
 
         # Add a file to the library but don't copy it in yet.
         self.lib = library.Library(':memory:', self.libdir)
@@ -573,36 +576,36 @@ class UpdateTest(_common.TestCase):
         _common.touch(artfile)
         self.album.set_art(artfile)
         self.album.store()
-        os.remove(artfile)
+        util.remove(artfile)
 
     def _update(self, query=(), album=False, move=False, reset_mtime=True,
-                fields=None):
+                fields=None, exclude_fields=None):
         self.io.addinput('y')
         if reset_mtime:
             self.i.mtime = 0
             self.i.store()
         commands.update_items(self.lib, query, album, move, False,
-                              fields=fields)
+                              fields=fields, exclude_fields=exclude_fields)
 
     def test_delete_removes_item(self):
         self.assertTrue(list(self.lib.items()))
-        os.remove(self.i.path)
-        os.remove(self.i2.path)
+        util.remove(self.i.path)
+        util.remove(self.i2.path)
         self._update()
         self.assertFalse(list(self.lib.items()))
 
     def test_delete_removes_album(self):
         self.assertTrue(self.lib.albums())
-        os.remove(self.i.path)
-        os.remove(self.i2.path)
+        util.remove(self.i.path)
+        util.remove(self.i2.path)
         self._update()
         self.assertFalse(self.lib.albums())
 
     def test_delete_removes_album_art(self):
         artpath = self.album.artpath
         self.assertExists(artpath)
-        os.remove(self.i.path)
-        os.remove(self.i2.path)
+        util.remove(self.i.path)
+        util.remove(self.i2.path)
         self._update()
         self.assertNotExists(artpath)
 
@@ -694,34 +697,45 @@ class UpdateTest(_common.TestCase):
         mf.save()
 
         # Make in-memory mtime match on-disk mtime.
-        self.i.mtime = os.path.getmtime(self.i.path)
+        self.i.mtime = os.path.getmtime(syspath(self.i.path))
         self.i.store()
 
         self._update(reset_mtime=False)
         item = self.lib.items().get()
         self.assertEqual(item.title, 'full')
 
-    @unittest.expectedFailure
     def test_multivalued_albumtype_roundtrip(self):
         # https://github.com/beetbox/beets/issues/4528
 
         # albumtypes is empty for our test fixtures, so populate it first
         album = self.album
-        # setting albumtypes does not set albumtype currently...
-        # FIXME: When actually fixing the issue 4528, consider whether this
-        # should be set to "album" or ["album"]
-        album.albumtype = "album"
-        album.albumtypes = "album"
+        correct_albumtypes = ["album", "live"]
+
+        # Setting albumtypes does not set albumtype, currently.
+        # Using x[0] mirrors https://github.com/beetbox/mediafile/blob/057432ad53b3b84385e5582f69f44dc00d0a725d/mediafile.py#L1928  # noqa: E501
+        correct_albumtype = correct_albumtypes[0]
+
+        album.albumtype = correct_albumtype
+        album.albumtypes = correct_albumtypes
         album.try_sync(write=True, move=False)
 
         album.load()
-        albumtype_before = album.albumtype
-        self.assertEqual(albumtype_before, "album")
+        self.assertEqual(album.albumtype,  correct_albumtype)
+        self.assertEqual(album.albumtypes, correct_albumtypes)
 
         self._update()
 
         album.load()
-        self.assertEqual(albumtype_before, album.albumtype)
+        self.assertEqual(album.albumtype,  correct_albumtype)
+        self.assertEqual(album.albumtypes, correct_albumtypes)
+
+    def test_modified_metadata_excluded(self):
+        mf = MediaFile(syspath(self.i.path))
+        mf.lyrics = 'new lyrics'
+        mf.save()
+        self._update(exclude_fields=['lyrics'])
+        item = self.lib.items().get()
+        self.assertNotEqual(item.lyrics, 'new lyrics')
 
 
 class PrintTest(_common.TestCase):
@@ -834,20 +848,20 @@ class ConfigTest(unittest.TestCase, TestHelper, _common.Assertions):
             self.user_config_dir = os.path.join(
                 self.temp_dir, b'.config', b'beets'
             )
-        os.makedirs(self.user_config_dir)
+        os.makedirs(syspath(self.user_config_dir))
         self.user_config_path = os.path.join(self.user_config_dir,
                                              b'config.yaml')
 
         # Custom BEETSDIR
         self.beetsdir = os.path.join(self.temp_dir, b'beetsdir')
-        os.makedirs(self.beetsdir)
+        os.makedirs(syspath(self.beetsdir))
 
         self._reset_config()
         self.load_plugins()
 
     def tearDown(self):
         commands.default_commands.pop()
-        os.chdir(self._orig_cwd)
+        os.chdir(syspath(self._orig_cwd))
         if self._old_home is not None:
             os.environ['HOME'] = self._old_home
         if self._old_appdata is None:
@@ -1031,7 +1045,7 @@ class ConfigTest(unittest.TestCase, TestHelper, _common.Assertions):
 
     def test_command_line_option_relative_to_working_dir(self):
         config.read()
-        os.chdir(self.temp_dir)
+        os.chdir(syspath(self.temp_dir))
         self.run_command('--library', 'foo.db', 'test', lib=None)
         self.assert_equal_path(config['library'].as_filename(),
                                os.path.join(os.getcwd(), 'foo.db'))
@@ -1185,8 +1199,7 @@ class ShowChangeTest(_common.TestCase):
             cur_album,
             autotag.AlbumMatch(album_dist, info, mapping, set(), set()),
         )
-        # FIXME decoding shouldn't be done here
-        return util.text_string(self.io.getoutput().lower())
+        return self.io.getoutput().lower()
 
     def test_null_change(self):
         msg = self._show_change()
@@ -1306,7 +1319,7 @@ class CompletionTest(_common.TestCase, TestHelper):
 
         # Load bash_completion library.
         for path in commands.BASH_COMPLETION_PATHS:
-            if os.path.exists(util.syspath(path)):
+            if os.path.exists(syspath(path)):
                 bash_completion = path
                 break
         else:

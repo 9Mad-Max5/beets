@@ -49,7 +49,7 @@ from beets import importer
 from beets.autotag.hooks import AlbumInfo, TrackInfo
 from mediafile import MediaFile, Image
 from beets import util
-from beets.util import MoveOperation
+from beets.util import MoveOperation, syspath, bytestring_path
 
 # TODO Move AutotagMock here
 from test import _common
@@ -181,7 +181,7 @@ class TestHelper:
         self.config['threaded'] = False
 
         self.libdir = os.path.join(self.temp_dir, b'libdir')
-        os.mkdir(self.libdir)
+        os.mkdir(syspath(self.libdir))
         self.config['directory'] = util.py3_path(self.libdir)
 
         if disk:
@@ -242,17 +242,17 @@ class TestHelper:
         `self.temp_dir` and creates a `ImportSessionFixture` for this path.
         """
         import_dir = os.path.join(self.temp_dir, b'import')
-        if not os.path.isdir(import_dir):
-            os.mkdir(import_dir)
+        if not os.path.isdir(syspath(import_dir)):
+            os.mkdir(syspath(import_dir))
 
         album_no = 0
         while album_count:
             album = util.bytestring_path(f'album {album_no}')
             album_dir = os.path.join(import_dir, album)
-            if os.path.exists(album_dir):
+            if os.path.exists(syspath(album_dir)):
                 album_no += 1
                 continue
-            os.mkdir(album_dir)
+            os.mkdir(syspath(album_dir))
             album_count -= 1
 
             track_no = 0
@@ -262,11 +262,11 @@ class TestHelper:
                 src = os.path.join(_common.RSRC, b'full.mp3')
                 title_file = util.bytestring_path(f'{title}.mp3')
                 dest = os.path.join(album_dir, title_file)
-                if os.path.exists(dest):
+                if os.path.exists(syspath(dest)):
                     track_no += 1
                     continue
                 album_item_count -= 1
-                shutil.copy(src, dest)
+                shutil.copy(syspath(src), syspath(dest))
                 mediafile = MediaFile(dest)
                 mediafile.update({
                     'artist': 'artist',
@@ -293,7 +293,7 @@ class TestHelper:
         The item receives its attributes from `**values` paratmeter. The
         `title`, `artist`, `album`, `track`, `format` and `path`
         attributes have defaults if they are not given as parameters.
-        The `title` attribute is formated with a running item count to
+        The `title` attribute is formatted with a running item count to
         prevent duplicates. The default for the `path` attribute
         respects the `format` value.
 
@@ -373,11 +373,20 @@ class TestHelper:
             items.append(item)
         return items
 
-    def add_album_fixture(self, track_count=1, ext='mp3', disc_count=1):
+    def add_album_fixture(
+        self,
+        track_count=1,
+        fname='full',
+        ext='mp3',
+        disc_count=1,
+    ):
         """Add an album with files to the database.
         """
         items = []
-        path = os.path.join(_common.RSRC, util.bytestring_path('full.' + ext))
+        path = os.path.join(
+            _common.RSRC,
+            util.bytestring_path(f'{fname}.{ext}'),
+        )
         for discnumber in range(1, disc_count + 1):
             for i in range(track_count):
                 item = Item.from_path(path)
@@ -405,8 +414,9 @@ class TestHelper:
         """
         src = os.path.join(_common.RSRC, util.bytestring_path('full.' + ext))
         handle, path = mkstemp()
+        path = bytestring_path(path)
         os.close(handle)
-        shutil.copyfile(src, path)
+        shutil.copyfile(syspath(src), syspath(path))
 
         if images:
             mediafile = MediaFile(path)
@@ -428,7 +438,7 @@ class TestHelper:
     def remove_mediafile_fixtures(self):
         if hasattr(self, '_mediafile_fixtures'):
             for path in self._mediafile_fixtures:
-                os.remove(path)
+                os.remove(syspath(path))
 
     def _get_item_count(self):
         if not hasattr(self, '__item_count'):
@@ -453,7 +463,7 @@ class TestHelper:
     def run_with_output(self, *args):
         with capture_stdout() as out:
             self.run_command(*args)
-        return util.text_string(out.getvalue())
+        return out.getvalue()
 
     # Safe file operations
 
@@ -467,7 +477,7 @@ class TestHelper:
     def remove_temp_dir(self):
         """Delete the temporary directory created by `create_temp_dir`.
         """
-        shutil.rmtree(self.temp_dir)
+        shutil.rmtree(syspath(self.temp_dir))
 
     def touch(self, path, dir=None, content=''):
         """Create a file at `path` with given content.
@@ -483,10 +493,10 @@ class TestHelper:
             path = os.path.join(self.temp_dir, path)
 
         parent = os.path.dirname(path)
-        if not os.path.isdir(parent):
-            os.makedirs(util.syspath(parent))
+        if not os.path.isdir(syspath(parent)):
+            os.makedirs(syspath(parent))
 
-        with open(util.syspath(path), 'a+') as f:
+        with open(syspath(path), 'a+') as f:
             f.write(content)
         return path
 

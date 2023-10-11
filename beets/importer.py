@@ -50,6 +50,19 @@ QUEUE_SIZE = 128
 SINGLE_ARTIST_THRESH = 0.25
 PROGRESS_KEY = 'tagprogress'
 HISTORY_KEY = 'taghistory'
+# Usually flexible attributes are preserved (i.e., not updated) during
+# reimports. The following two lists (globally) change this behaviour for
+# certain fields. To alter these lists only when a specific plugin is in use,
+# something like this can be used within that plugin's code:
+#
+# from beets import importer
+# def extend_reimport_fresh_fields_item():
+#     importer.REIMPORT_FRESH_FIELDS_ITEM.extend(['tidal_track_popularity']
+# )
+REIMPORT_FRESH_FIELDS_ALBUM = ['data_source']
+REIMPORT_FRESH_FIELDS_ITEM = ['data_source', 'bandcamp_album_id',
+                              'spotify_album_id', 'deezer_album_id',
+                              'beatport_album_id', 'tidal_album_id']
 
 # Global logger.
 log = logging.getLogger('beets')
@@ -379,7 +392,8 @@ class ImportSession:
         """Mark paths and directories as merged for future reimport tasks.
         """
         self._merged_items.update(paths)
-        dirs = {os.path.dirname(path) if os.path.isfile(path) else path
+        dirs = {os.path.dirname(path)
+                if os.path.isfile(syspath(path)) else path
                 for path in paths}
         self._merged_dirs.update(dirs)
 
@@ -727,8 +741,12 @@ class ImportTask(BaseImportTask):
             # item.
             if not self.items[0].albumartist:
                 changes['albumartist'] = self.items[0].artist
+            if not self.items[0].albumartists:
+                changes['albumartists'] = self.items[0].artists
             if not self.items[0].mb_albumartistid:
                 changes['mb_albumartistid'] = self.items[0].mb_artistid
+            if not self.items[0].mb_albumartistids:
+                changes['mb_albumartistids'] = self.items[0].mb_artistids
 
         # Apply new metadata.
         for item in self.items:
@@ -811,21 +829,47 @@ class ImportTask(BaseImportTask):
         """For reimports, preserves metadata for reimported items and
         albums.
         """
+        def _reduce_and_log(new_obj, existing_fields, overwrite_keys):
+            """Some flexible attributes should be overwritten (rather than
+            preserved) on reimports; Copies existing_fields, logs and removes
+            entries that should not be preserved and returns a dict containing
+            those fields left to actually be preserved.
+            """
+            noun = 'album' if isinstance(new_obj, library.Album) else 'item'
+            existing_fields = dict(existing_fields)
+            overwritten_fields = [k for k in existing_fields
+                                  if k in overwrite_keys
+                                  and new_obj.get(k)
+                                  and existing_fields.get(k) != new_obj.get(k)]
+            if overwritten_fields:
+                log.debug(
+                    'Reimported {} {}. Not preserving flexible attributes {}. '
+                    'Path: {}',
+                    noun, new_obj.id, overwritten_fields,
+                    displayable_path(new_obj.path))
+                for key in overwritten_fields:
+                    del existing_fields[key]
+            return existing_fields
+
         if self.is_album:
             replaced_album = self.replaced_albums.get(self.album.path)
             if replaced_album:
+                album_fields = _reduce_and_log(self.album,
+                                               replaced_album._values_flex,
+                                               REIMPORT_FRESH_FIELDS_ALBUM)
                 self.album.added = replaced_album.added
-                self.album.update(replaced_album._values_flex)
+                self.album.update(album_fields)
                 self.album.artpath = replaced_album.artpath
                 self.album.store()
                 log.debug(
-                    'Reimported album: added {0}, flexible '
-                    'attributes {1} from album {2} for {3}',
-                    self.album.added,
-                    replaced_album._values_flex.keys(),
-                    replaced_album.id,
-                    displayable_path(self.album.path)
-                )
+                    "Reimported album {}. Preserving attribute ['added']. "
+                    "Path: {}",
+                    self.album.id, displayable_path(self.album.path))
+                log.debug(
+                    'Reimported album {}. Preserving flexible attributes {}. '
+                    'Path: {}',
+                    self.album.id, list(album_fields.keys()),
+                    displayable_path(self.album.path))
 
         for item in self.imported_items():
             dup_items = self.replaced_items[item]
@@ -833,20 +877,17 @@ class ImportTask(BaseImportTask):
                 if dup_item.added and dup_item.added != item.added:
                     item.added = dup_item.added
                     log.debug(
-                        'Reimported item added {0} '
-                        'from item {1} for {2}',
-                        item.added,
-                        dup_item.id,
-                        displayable_path(item.path)
-                    )
-                item.update(dup_item._values_flex)
+                        "Reimported item {}. Preserving attribute ['added']. "
+                        "Path: {}",
+                        item.id, displayable_path(item.path))
+                item_fields = _reduce_and_log(item, dup_item._values_flex,
+                                              REIMPORT_FRESH_FIELDS_ITEM)
+                item.update(item_fields)
                 log.debug(
-                    'Reimported item flexible attributes {0} '
-                    'from item {1} for {2}',
-                    dup_item._values_flex.keys(),
-                    dup_item.id,
-                    displayable_path(item.path)
-                )
+                    'Reimported item {}. Preserving flexible attributes {}. '
+                    'Path: {}',
+                    item.id, list(item_fields.keys()),
+                    displayable_path(item.path))
                 item.store()
 
     def remove_replaced(self, lib):
@@ -885,7 +926,7 @@ class ImportTask(BaseImportTask):
         the file still exists, no pruning is performed, so it's safe to
         call when the file in question may not have been removed.
         """
-        if self.toppath and not os.path.exists(filename):
+        if self.toppath and not os.path.exists(syspath(filename)):
             util.prune_dirs(os.path.dirname(filename),
                             self.toppath,
                             clutter=config['clutter'].as_str_seq())
@@ -1095,7 +1136,7 @@ class ArchiveImportTask(SentinelImportTask):
         if self.extracted:
             log.debug('Removing extracted directory: {0}',
                       displayable_path(self.toppath))
-            shutil.rmtree(self.toppath)
+            shutil.rmtree(syspath(self.toppath))
 
     def extract(self):
         """Extracts the archive to a temporary directory and sets
@@ -1109,6 +1150,19 @@ class ArchiveImportTask(SentinelImportTask):
         archive = handler_class(util.py3_path(self.toppath), mode='r')
         try:
             archive.extractall(extract_to)
+
+            # Adjust the files' mtimes to match the information from the
+            # archive. Inspired by: https://stackoverflow.com/q/9813243
+            for f in archive.infolist():
+                # The date_time will need to adjusted otherwise
+                # the item will have the current date_time of extraction.
+                # The (0, 0, -1) is added to date_time because the
+                # function time.mktime expects a 9-element tuple.
+                # The -1 indicates that the DST flag is unknown.
+                date_time = time.mktime(f.date_time + (0, 0, -1))
+                fullpath = os.path.join(extract_to, f.filename)
+                os.utime(fullpath, (date_time, date_time))
+
         finally:
             archive.close()
         self.extracted = True
@@ -1313,7 +1367,7 @@ def _freshen_items(items):
 
 def _extend_pipeline(tasks, *stages):
     # Return pipeline extension for stages with list of tasks
-    if type(tasks) == list:
+    if isinstance(tasks, list):
         task_iter = iter(tasks)
     else:
         task_iter = tasks
@@ -1406,7 +1460,7 @@ def user_query(session, task):
     and the processed task is yielded.
 
     It emits the ``import_task_choice`` event for plugins. Plugins have
-    acces to the choice via the ``taks.choice_flag`` property and may
+    access to the choice via the ``task.choice_flag`` property and may
     choose to change it.
     """
     if task.skip:

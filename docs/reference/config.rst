@@ -159,7 +159,7 @@ path_sep_replace
 A string that replaces the path separator (for example, the forward slash
 ``/`` on Linux and MacOS, and the backward slash ``\\`` on Windows) when
 generating filenames with beets.
-This option is related to :ref:`replace`, but is distict from it for
+This option is related to :ref:`replace`, but is distinct from it for
 technical reasons.
 
 .. warning::
@@ -728,6 +728,29 @@ Controls how duplicates are treated in import task.
 item; "merge" means merge into one album; "ask" means the user 
 should be prompted for the action each time. The default is ``ask``.
 
+.. _duplicate_verbose_prompt:
+
+duplicate_verbose_prompt
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+Usually when duplicates are detected during import, information about the
+existing and the newly imported album is summarized. Enabling this option also
+lists details on individual tracks. The :ref:`format_item setting
+<format_item>` is applied, which would, considering the default, look like
+this:
+
+.. code-block:: console
+
+    This item is already in the library!
+    Old: 1 items, MP3, 320kbps, 5:56, 13.6 MiB
+      Artist Name - Album Name - Third Track Title
+    New: 2 items, MP3, 320kbps, 7:18, 17.1 MiB
+      Artist Name - Album Name - First Track Title
+      Artist Name - Album Name - Second Track Title
+    [S]kip new, Keep all, Remove old, Merge all?
+
+Default: ``no``.
+
 .. _bell:
 
 bell
@@ -759,6 +782,19 @@ Fields are set on both the album and each individual track of the album.
 Fields are persisted to the media files of each track.
 
 Default: ``{}`` (empty).
+
+.. _singleton_album_disambig:
+
+singleton_album_disambig
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+During singleton imports and if the metadata source provides it, album names
+are appended to the disambiguation string of matching track candidates. For
+example: ``The Artist - The Title (Discogs, Index 3, Track B1, [The Album]``.
+This feature is currently supported by the :doc:`/plugins/discogs` and the
+:doc:`/plugins/spotify`.
+
+Default: ``yes``.
 
 .. _musicbrainz-config:
 
@@ -841,6 +877,33 @@ Use MusicBrainz genre tags to populate (and replace if it's already set) the
 release and the release-group on MusicBrainz, separated by "; " and sorted by
 the total number of votes.
 Default: ``no``
+
+.. _musicbrainz.external_ids:
+
+external_ids
+~~~~~~~~~~~~
+
+Set any of the ``external_ids`` options to ``yes`` to enable the MusicBrainz
+importer to look for links to related metadata sources. If such a link is
+available the release ID will be extracted from the URL provided and imported
+to the beets library::
+
+    musicbrainz:
+        external_ids:
+            discogs: yes
+            spotify: yes
+            bandcamp: yes
+            beatport: yes
+            deezer: yes
+            tidal: yes
+
+
+The library fields of the corresponding :ref:`autotagger_extensions` are used
+to save the data (``discogs_albumid``, ``bandcamp_album_id``,
+``spotify_album_id``, ``beatport_album_id``, ``deezer_album_id``,
+``tidal_album_id``). On re-imports existing data will be overwritten.
+
+The default of all options is ``no``.
 
 .. _match-config:
 

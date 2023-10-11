@@ -44,6 +44,23 @@ log = logging.getLogger('beets')
 
 # Library-specific query types.
 
+class SingletonQuery(dbcore.FieldQuery):
+    """This query is responsible for the 'singleton' lookup.
+
+    It is based on the FieldQuery and constructs a SQL clause
+    'album_id is NULL' which yields the same result as the previous filter
+    in Python but is more performant since it's done in SQL.
+
+    Using util.str2bool ensures that lookups like singleton:true, singleton:1
+    and singleton:false, singleton:0 are handled consistently.
+    """
+    def __new__(cls, field, value, *args, **kwargs):
+        query = dbcore.query.NoneQuery('album_id')
+        if util.str2bool(value):
+            return query
+        return dbcore.query.NotQuery(query)
+
+
 class PathQuery(dbcore.FieldQuery):
     """A query that matches all items under a given path.
 
@@ -51,6 +68,8 @@ class PathQuery(dbcore.FieldQuery):
     default, the behavior depends on the OS: case-insensitive on Windows
     and case-sensitive otherwise.
     """
+    # For tests
+    force_implicit_query_detection = False
 
     def __init__(self, field, pattern, fast=True, case_sensitive=None):
         """Create a path query.
@@ -62,21 +81,27 @@ class PathQuery(dbcore.FieldQuery):
         """
         super().__init__(field, pattern, fast)
 
+        path = util.normpath(pattern)
+
         # By default, the case sensitivity depends on the filesystem
         # that the query path is located on.
         if case_sensitive is None:
-            path = util.bytestring_path(util.normpath(pattern))
-            case_sensitive = beets.util.case_sensitive(path)
+            case_sensitive = util.case_sensitive(path)
         self.case_sensitive = case_sensitive
 
         # Use a normalized-case pattern for case-insensitive matches.
         if not case_sensitive:
-            pattern = pattern.lower()
+            # We need to lowercase the entire path, not just the pattern.
+            # In particular, on Windows, the drive letter is otherwise not
+            # lowercased.
+            # This also ensures that the `match()` method below and the SQL
+            # from `col_clause()` do the same thing.
+            path = path.lower()
 
         # Match the path as a single file.
-        self.file_path = util.bytestring_path(util.normpath(pattern))
+        self.file_path = path
         # As a directory (prefix).
-        self.dir_path = util.bytestring_path(os.path.join(self.file_path, b''))
+        self.dir_path = os.path.join(path, b'')
 
     @classmethod
     def is_path_query(cls, query_part):
@@ -90,11 +115,13 @@ class PathQuery(dbcore.FieldQuery):
 
         # Test both `sep` and `altsep` (i.e., both slash and backslash on
         # Windows).
-        return (
-            (os.sep in query_part or
-             (os.altsep and os.altsep in query_part)) and
-            os.path.exists(syspath(normpath(query_part)))
-        )
+        if not (os.sep in query_part
+                or (os.altsep and os.altsep in query_part)):
+            return False
+
+        if cls.force_implicit_query_detection:
+            return True
+        return os.path.exists(syspath(normpath(query_part)))
 
     def match(self, item):
         path = item.path if self.case_sensitive else item.path.lower()
@@ -300,34 +327,26 @@ class FileOperationError(Exception):
         self.path = path
         self.reason = reason
 
-    def text(self):
+    def __str__(self):
         """Get a string representing the error.
 
-        Describe both the underlying reason and the file path
-        in question.
+        Describe both the underlying reason and the file path in question.
         """
-        return '{}: {}'.format(
-            util.displayable_path(self.path),
-            str(self.reason)
-        )
-
-    # define __str__ as text to avoid infinite loop on super() calls
-    # with @six.python_2_unicode_compatible
-    __str__ = text
+        return f"{util.displayable_path(self.path)}: {self.reason}"
 
 
 class ReadError(FileOperationError):
     """An error while reading a file (i.e. in `Item.read`)."""
 
     def __str__(self):
-        return 'error reading ' + super().text()
+        return 'error reading ' + str(super())
 
 
 class WriteError(FileOperationError):
     """An error while writing a file (i.e. in `Item.write`)."""
 
     def __str__(self):
-        return 'error writing ' + super().text()
+        return 'error writing ' + str(super())
 
 
 # Item and Album model classes.
@@ -464,13 +483,20 @@ class Item(LibModel):
 
         'title': types.STRING,
         'artist': types.STRING,
+        'artists': types.MULTI_VALUE_DSV,
+        'artists_ids': types.MULTI_VALUE_DSV,
         'artist_sort': types.STRING,
+        'artists_sort': types.MULTI_VALUE_DSV,
         'artist_credit': types.STRING,
+        'artists_credit': types.MULTI_VALUE_DSV,
         'remixer': types.STRING,
         'album': types.STRING,
         'albumartist': types.STRING,
+        'albumartists': types.MULTI_VALUE_DSV,
         'albumartist_sort': types.STRING,
+        'albumartists_sort': types.MULTI_VALUE_DSV,
         'albumartist_credit': types.STRING,
+        'albumartists_credit': types.MULTI_VALUE_DSV,
         'genre': types.STRING,
         'style': types.STRING,
         'discogs_albumid': types.INTEGER,
@@ -498,15 +524,18 @@ class Item(LibModel):
         'mb_trackid': types.STRING,
         'mb_albumid': types.STRING,
         'mb_artistid': types.STRING,
+        'mb_artistids': types.MULTI_VALUE_DSV,
         'mb_albumartistid': types.STRING,
+        'mb_albumartistids': types.MULTI_VALUE_DSV,
         'mb_releasetrackid': types.STRING,
         'trackdisambig': types.STRING,
         'albumtype': types.STRING,
-        'albumtypes': types.STRING,
+        'albumtypes': types.SEMICOLON_SPACE_DSV,
         'label': types.STRING,
         'acoustid_fingerprint': types.STRING,
         'acoustid_id': types.STRING,
         'mb_releasegroupid': types.STRING,
+        'release_group_title': types.STRING,
         'asin': types.STRING,
         'isrc': types.STRING,
         'catalognum': types.STRING,
@@ -566,6 +595,8 @@ class Item(LibModel):
     _formatter = FormattedItemMapping
 
     _sorts = {'artist': SmartArtistSort}
+
+    _queries = {'singleton': SingletonQuery}
 
     _format_config_key = 'format_item'
 
@@ -1048,6 +1079,9 @@ class Album(LibModel):
         'albumartist': types.STRING,
         'albumartist_sort': types.STRING,
         'albumartist_credit': types.STRING,
+        'albumartists': types.MULTI_VALUE_DSV,
+        'albumartists_sort': types.MULTI_VALUE_DSV,
+        'albumartists_credit': types.MULTI_VALUE_DSV,
         'album': types.STRING,
         'genre': types.STRING,
         'style': types.STRING,
@@ -1062,9 +1096,10 @@ class Album(LibModel):
         'mb_albumid': types.STRING,
         'mb_albumartistid': types.STRING,
         'albumtype': types.STRING,
-        'albumtypes': types.STRING,
+        'albumtypes': types.SEMICOLON_SPACE_DSV,
         'label': types.STRING,
         'mb_releasegroupid': types.STRING,
+        'release_group_title': types.STRING,
         'asin': types.STRING,
         'catalognum': types.STRING,
         'script': types.STRING,
@@ -1097,8 +1132,11 @@ class Album(LibModel):
     item_keys = [
         'added',
         'albumartist',
+        'albumartists',
         'albumartist_sort',
+        'albumartists_sort',
         'albumartist_credit',
+        'albumartists_credit',
         'album',
         'genre',
         'style',
@@ -1124,6 +1162,7 @@ class Album(LibModel):
         'albumstatus',
         'albumdisambig',
         'releasegroupdisambig',
+        'release_group_title',
         'rg_album_gain',
         'rg_album_peak',
         'r128_album_gain',
@@ -1191,7 +1230,7 @@ class Album(LibModel):
         if not old_art:
             return
 
-        if not os.path.exists(old_art):
+        if not os.path.exists(syspath(old_art)):
             log.error('removing reference to missing album art file {}',
                       util.displayable_path(old_art))
             self.artpath = None
@@ -1345,22 +1384,27 @@ class Album(LibModel):
 
         plugins.send('art_set', album=self)
 
-    def store(self, fields=None):
+    def store(self, fields=None, inherit=True):
         """Update the database with the album information.
-
-        The album's tracks are also updated.
 
         `fields` represents the fields to be stored. If not specified,
         all fields will be.
+
+        The album's tracks are also updated when the `inherit` flag is enabled.
+        This applies to fixed attributes as well as flexible ones. The `id`
+        attribute of the album will never be inherited.
         """
         # Get modified track fields.
         track_updates = {}
         track_deletes = set()
         for key in self._dirty:
-            if key in self.item_keys:
-                track_updates[key] = self[key]
-            elif key not in self:
-                track_deletes.add(key)
+            if inherit:
+                if key in self.item_keys:  # is a fixed attribute
+                    track_updates[key] = self[key]
+                elif key not in self:  # is a fixed or a flexible attribute
+                    track_deletes.add(key)
+                elif key != 'id':  # is a flexible attribute
+                    track_updates[key] = self[key]
 
         with self._db.transaction():
             super().store(fields)
@@ -1376,7 +1420,7 @@ class Album(LibModel):
                             del item[key]
                     item.store()
 
-    def try_sync(self, write, move):
+    def try_sync(self, write, move, inherit=True):
         """Synchronize the album and its items with the database.
         Optionally, also write any new tags into the files and update
         their paths.
@@ -1385,7 +1429,7 @@ class Album(LibModel):
         `move` controls whether files (both audio and album art) are
         moved.
         """
-        self.store()
+        self.store(inherit=inherit)
         for item in self.items():
             item.try_sync(write, move)
 
@@ -1766,7 +1810,7 @@ class DefaultTemplateFunctions:
         should return an empty string.
 
         "initial_subqueries" is a list of subqueries that should be included
-        in the query to find the ambigous items.
+        in the query to find the ambiguous items.
         """
         memokey = self._tmpl_unique_memokey(name, keys, disam, item_id)
         memoval = self.lib._memotable.get(memokey)

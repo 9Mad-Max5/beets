@@ -17,6 +17,7 @@
 
 
 from beets.plugins import BeetsPlugin
+from beets.plugins import send as send_event
 from beets import ui
 from beets.util import (mkdirall, normpath, sanitize_path, syspath,
                         bytestring_path, path_as_posix, displayable_path)
@@ -24,12 +25,7 @@ from beets.library import Item, Album, parse_query_string
 from beets.dbcore import OrQuery
 from beets.dbcore.query import MultipleSort, ParsingError
 import os
-
-try:
-    from urllib.request import pathname2url
-except ImportError:
-    # python2 is a bit different
-    from urllib import pathname2url
+from urllib.request import pathname2url
 
 
 class SmartPlaylistPlugin(BeetsPlugin):
@@ -197,7 +193,7 @@ class SmartPlaylistPlugin(BeetsPlugin):
             if pretend:
                 self._log.info('Results for playlist {}:', name)
             else:
-                self._log.debug("Creating playlist {0}", name)
+                self._log.info("Creating playlist {0}", name)
             items = []
 
             if query:
@@ -237,6 +233,8 @@ class SmartPlaylistPlugin(BeetsPlugin):
                         if self.config['urlencode']:
                             path = bytestring_path(pathname2url(path))
                         f.write(prefix + path + b'\n')
+            # Send an event when playlists were updated.
+            send_event("smartplaylist_update")
 
         if pretend:
             self._log.info("Displayed results for {0} playlists",
